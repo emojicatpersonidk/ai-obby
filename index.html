@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Chaos Obby: CARPET RESTORED</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #00A2FF; font-family: 'Arial Black', sans-serif; touch-action: none; user-select: none; }
+        #ui { position: absolute; inset: 0; pointer-events: none; z-index: 100; }
+        #stats { position: absolute; top: 20px; left: 20px; display: flex; flex-direction: column; gap: 8px; }
+        .stat-box { background: rgba(0,0,0,0.85); color: #fff; padding: 10px 20px; border-radius: 15px; border: 2px solid rgba(255,255,255,0.2); font-size: 18px; }
+        #btn-reset { position: absolute; top: 20px; right: 20px; background: #FF4757; color: white; padding: 10px 15px; border-radius: 10px; border: 3px solid #fff; pointer-events: auto; font-weight: bold; cursor: pointer; }
+        #inventory { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; pointer-events: auto; }
+        .gear-slot { width: 65px; height: 65px; background: rgba(0,0,0,0.8); border: 3px solid #444; border-radius: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: white; font-size: 10px; font-weight: bold; text-align: center; }
+        .gear-slot.active { border-color: #00FF00; transform: scale(1.1); background: rgba(0,255,0,0.2); }
+        #joy-zone { position: absolute; bottom: 50px; left: 40px; width: 110px; height: 110px; background: rgba(255,255,255,0.15); border-radius: 50%; pointer-events: auto; border: 2px solid rgba(255,255,255,0.4); }
+        #joy-stick { position: absolute; top: 50%; left: 50%; width: 45px; height: 45px; background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+        #btn-jump { position: absolute; bottom: 50px; right: 40px; width: 95px; height: 95px; background: #2ECC71; border-radius: 50%; border: 5px solid #fff; pointer-events: auto; display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="stats">
+            <div class="stat-box">STAGE: <span id="cur-stage">1</span></div>
+            <div class="stat-box" style="border-color: #FF4757;">💀: <span id="death-count">0</span></div>
+        </div>
+        <div id="btn-reset">RESET</div>
+        <div id="inventory">
+            <div class="gear-slot active" id="gear-none">NONE</div>
+            <div class="gear-slot" style="background:#FF4757" id="gear-speed">SPEED</div>
+            <div class="gear-slot" style="background:#54A0FF" id="gear-gravity">GRAV</div>
+            <div class="gear-slot" style="background:linear-gradient(45deg, red, orange, yellow, green, blue, purple)" id="gear-carpet">CARPET</div>
+        </div>
+        <div id="joy-zone"><div id="joy-stick"></div></div>
+        <div id="btn-jump">JUMP</div>
+    </div>
+
+    <script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }</script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, player, torsoMesh, headMesh;
+        let platforms = [], trails = [], moveInput = { x: 0, z: 0 }, velY = 0, isGrounded = false;
+        let deaths = 0, currentStage = 1, spawnPos = new THREE.Vector3(0, 5, 0);
+        let camYaw = 0, camPitch = 0.25, camDist = 22;
+        let joyId = null, rotId = null, lastT = { x: 0, y: 0 };
+        const rainbow = [0xFF0000, 0xFF7F00, 0xFFFF00, 0x00FF00, 0x0000FF, 0x4B0082, 0x9400D3];
+
+        let currentGear = 'none', baseSpeed = 0.7, baseGravity = 0.046, baseJump = 1.05;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x40B3FF);
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 10000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.4));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(100, 300, 100);
+            scene.add(sun);
+
+            const saved = localStorage.getItem('obby_stage');
+            if(saved) currentStage = parseInt(saved);
+
+            createAvatar();
+            buildWorld();
+            setupControls();
+            setupGearLogic();
+            
+            goToStage(currentStage);
+            animate();
+
+            document.getElementById('btn-reset').onpointerdown = () => { localStorage.clear(); location.reload(); };
+        }
+
+        function createAvatar() {
+            player = new THREE.Group();
+            torsoMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.4, 0.6), new THREE.MeshStandardMaterial({color: 0x0D69AB})); torsoMesh.position.y = 1.6;
+            headMesh = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.85), new THREE.MeshStandardMaterial({color: 0xFFD700})); headMesh.position.y = 2.8;
+            const legs = new THREE.Group();
+            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), new THREE.MeshStandardMaterial({color: 0x333333})); legL.position.set(-0.3, 0.5, 0);
+            const legR = legL.clone(); legR.position.set(0.3, 0.5, 0);
+            legs.add(legL, legR);
+            player.add(torsoMesh, headMesh, legs);
+            
+            const carpet = new THREE.Mesh(new THREE.BoxGeometry(7, 0.1, 9), new THREE.MeshStandardMaterial({color: 0xffffff, transparent: true, opacity: 0.6}));
+            carpet.name = "carpet"; carpet.visible = false;
+            player.add(carpet);
+            scene.add(player);
+        }
+
+        function buildWorld() {
+            const DIST = 450;
+            for(let s = 1; s <= 100; s++) {
+                let startX = (s - 1) * DIST;
+                addPart(startX, -1, 0, 30, 2, 30, 0x888888, 'start', s);
+                let lz = 25, ly = 0;
+                let variety = s % 4;
+                if(variety === 3) {
+                    let bridgeLen = 140;
+                    addPart(startX, ly, lz + bridgeLen/2, 12, 1, bridgeLen, 0xaaaaaa, 'part', s);
+                    for(let i=0; i<8; i++) addPart(startX, ly + 0.3, lz + 20 + (i * 15), 12, 0.45, 3, 0xff0000, 'lava', s);
+                    lz += bridgeLen + 15;
+                } else { 
+                    for(let i=0; i<10; i++) {
+                        if(variety === 0) addPart(startX, ly += 0.8, lz += 15, 10, 1, 8, rainbow[i%7], 'part', s);
+                        else if(variety === 1) addPart(startX + (i%2?6:-6), ly, lz += 15, 9, 1, 8, rainbow[i%7], 'part', s);
+                        else addPart(startX, ly, lz += 17, 5, 1, 10, rainbow[i%7], 'part', s);
+                    }
+                }
+                addPart(startX, ly + 4, lz + 15, 25, 1, 25, 0xFF00FF, 'to_s' + (s+1), s);
+            }
+            let wx = 100 * DIST;
+            addPart(wx, 0, 100, 150, 1, 150, 0xEEEEEE, 'win_floor', 101);
+            for(let i=0; i<7; i++) addPart(wx - 40 + (i*13), 0.6, 60, 10, 0.2, 10, rainbow[i], 'paint_' + rainbow[i], 101);
+            addPart(wx + 40, 2, 120, 6, 4, 6, 0x333333, 'hat_top', 101); 
+            addPart(wx - 40, 2, 120, 6, 4, 6, 0x2ECC71, 'hat_remove', 101); 
+        }
+
+        function addPart(x, y, z, w, h, d, color, type, sId) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color }));
+            mesh.position.set(x, y, z); mesh.stageId = sId;
+            scene.add(mesh); platforms.push({ mesh, type, topY: y + h/2, w, d, stageId: sId });
+        }
+
+        function goToStage(s) {
+            currentStage = s;
+            document.getElementById('cur-stage').innerText = currentStage;
+            localStorage.setItem('obby_stage', currentStage);
+            if(s > 100) player.position.set(100*450, 8, 100);
+            else player.position.set((currentStage-1)*450, 8, 0);
+            spawnPos.copy(player.position); velY = 0;
+            platforms.forEach(p => p.mesh.visible = Math.abs(p.stageId - currentStage) <= 1 || p.stageId === 101);
+        }
+
+        function setupGearLogic() {
+            document.querySelectorAll('.gear-slot').forEach(slot => {
+                slot.onpointerdown = (e) => {
+                    e.stopPropagation();
+                    document.querySelectorAll('.gear-slot').forEach(s => s.classList.remove('active'));
+                    slot.classList.add('active');
+                    currentGear = slot.id.replace('gear-', '');
+                    player.getObjectByName("carpet").visible = (currentGear === 'carpet');
+                    baseSpeed = (currentGear === 'speed') ? 1.5 : 0.7;
+                    baseGravity = (currentGear === 'gravity') ? 0.02 : (currentGear === 'carpet' ? 0 : 0.046);
+                };
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // CARPET FLYING LOGIC
+            let fwd = new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(1,0,0), (currentGear === 'carpet') ? camPitch : 0).applyAxisAngle(new THREE.Vector3(0,1,0), camYaw);
+            let side = new THREE.Vector3(1,0,0).applyAxisAngle(new THREE.Vector3(0,1,0), camYaw);
+            
+            player.position.addScaledVector(fwd, -moveInput.z * (currentGear === 'carpet' ? 1.8 : baseSpeed));
+            player.position.addScaledVector(side, moveInput.x * (currentGear === 'carpet' ? 1.8 : baseSpeed));
+            
+            if(currentGear === 'carpet') {
+                velY = 0; player.rotation.y = camYaw;
+                if(Math.abs(moveInput.x) > 0.1 || Math.abs(moveInput.z) > 0.1) {
+                    const t = new THREE.Mesh(new THREE.BoxGeometry(5, 0.1, 3), new THREE.MeshBasicMaterial({color: rainbow[Math.floor(Math.random()*7)], transparent: true, opacity: 0.8}));
+                    t.position.copy(player.position).y -= 0.6;
+                    scene.add(t); trails.push({m: t, life: 1.0});
+                }
+            } else { velY -= baseGravity; player.position.y += velY; }
+
+            for(let i=trails.length-1; i>=0; i--) {
+                trails[i].life -= 0.04; trails[i].m.material.opacity = trails[i].life;
+                if(trails[i].life <= 0) { scene.remove(trails[i].m); trails.splice(i, 1); }
+            }
+
+            let grounded = false;
+            platforms.forEach(p => {
+                if(!p.mesh.visible) return;
+                let dx = Math.abs(player.position.x - p.mesh.position.x), dz = Math.abs(player.position.z - p.mesh.position.z);
+                if(dx < p.w/2 + 0.6 && dz < p.d/2 + 0.6) {
+                    if(p.type === 'lava' && player.position.y < p.topY + 0.9) die();
+                    if(velY <= 0 && player.position.y >= p.topY - 1.8 && player.position.y <= p.topY + 0.6) {
+                        player.position.y = p.topY; velY = 0; grounded = true;
+                        if(p.type.startsWith('to_s')) goToStage(parseInt(p.type.split('s')[1]));
+                        if(p.type.startsWith('paint_')) torsoMesh.material.color.setHex(parseInt(p.type.split('_')[1]));
+                        if(p.type === 'hat_top' && !headMesh.getObjectByName('myHat')) {
+                            const hat = new THREE.Group(); hat.name = 'myHat';
+                            const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.15, 1.4), new THREE.MeshStandardMaterial({color:0x111111}));
+                            const top = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.0, 0.9), new THREE.MeshStandardMaterial({color:0x111111}));
+                            top.position.y = 0.5; hat.add(base, top); hat.position.y = 0.5; headMesh.add(hat);
+                        }
+                        if(p.type === 'hat_remove') { const h = headMesh.getObjectByName('myHat'); if(h) headMesh.remove(h); }
+                    }
+                }
+            });
+
+            if(grounded) isGrounded = true; else isGrounded = false;
+            if(player.position.y < -80) die();
+            camera.position.copy(player.position).add(new THREE.Vector3(0,0,camDist).applyAxisAngle(new THREE.Vector3(1,0,0), camPitch).applyAxisAngle(new THREE.Vector3(0,1,0), camYaw));
+            camera.lookAt(player.position.clone().add(new THREE.Vector3(0, 2, 0)));
+            renderer.render(scene, camera);
+        }
+
+        function die() { player.position.copy(spawnPos); velY = 0; deaths++; document.getElementById('death-count').innerText = deaths; }
+
+        function setupControls() {
+            const stick = document.getElementById('joy-stick'), zone = document.getElementById('joy-zone');
+            window.onpointerdown = e => { if(e.clientX < window.innerWidth/2) joyId = e.pointerId; else { rotId = e.pointerId; lastT = {x: e.clientX, y: e.clientY}; }};
+            window.onpointermove = e => {
+                if(e.pointerId === joyId) {
+                    let rect = zone.getBoundingClientRect();
+                    let dx = e.clientX - (rect.left + rect.width/2), dy = e.clientY - (rect.top + rect.height/2);
+                    let dist = Math.sqrt(dx*dx + dy*dy), maxR = 45;
+                    if(dist > maxR) { dx *= maxR/dist; dy *= maxR/dist; dist = maxR; }
+                    moveInput = { x: dx/maxR, z: dy/maxR };
+                    stick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+                } else if(e.pointerId === rotId) {
+                    camYaw -= (e.clientX - lastT.x) * 0.008;
+                    camPitch = Math.max(-0.6, Math.min(1.0, camPitch + (e.clientY - lastT.y) * 0.008));
+                    lastT = {x: e.clientX, y: e.clientY};
+                }
+            };
+            window.onpointerup = e => { if(e.pointerId === joyId) { joyId = null; moveInput = {x:0, z:0}; stick.style.transform='translate(-50%, -50%)'; } else if(e.pointerId === rotId) rotId = null; };
+            document.getElementById('btn-jump').onpointerdown = (e) => { e.stopPropagation(); if(isGrounded || currentGear === 'carpet') { velY = baseJump; isGrounded = false; }};
+        }
+        init();
+    </script>
+</body>
+</html>
